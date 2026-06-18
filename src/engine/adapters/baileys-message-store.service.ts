@@ -33,7 +33,15 @@ export class BaileysMessageStoreService implements BaileysMessageStore {
     const { BufferJSON } = await this.loadLib();
     const serializedMessage = JSON.stringify(msg, BufferJSON.replacer);
     // Idempotent: the same message arrives from the send return AND the messages.upsert echo.
-    await this.repo.upsert({ sessionId, waMessageId, serializedMessage }, ['sessionId', 'waMessageId']);
+    // createdAt is set explicitly so the stored value carries millisecond precision — matching the
+    // :createdAt bound param used in enforceLimit(). Without this, SQLite's datetime('now') stores
+    // second-precision (e.g. '…:11') while the JS Date bound serializes as '…:11.000', and SQLite
+    // string-compares '…:11' < '…:11.000' = TRUE, causing every same-second row to be over-evicted
+    // and the store to be wiped to ~0 (C1).
+    await this.repo.upsert({ sessionId, waMessageId, serializedMessage, createdAt: new Date() }, [
+      'sessionId',
+      'waMessageId',
+    ]);
     await this.enforceLimit(sessionId);
   }
 
