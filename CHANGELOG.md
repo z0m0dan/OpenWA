@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`base64` media now takes precedence over `url` when both are provided on a media send.** A `send-image`/`send-video`/etc. request carrying both fields previously sent the URL — and because `@ValidateIf` skipped `@IsUrl` validation on `url` whenever `base64` was present, a stale `url` (e.g. an example default left in the body, or a client such as the n8n community node that sends both) was fetched unvalidated and could 404, silently shadowing the supplied base64 image. `buildMediaInput` now prefers `base64`, aligning the send path with the already-base64-first persisted message metadata. Both engine adapters (whatsapp-web.js and Baileys) already guard the remote fetch behind an `isHttpUrl` check, so the change covers both. [#670]
+
 ## [0.8.13] - 2026-07-09
 
 ### Added
