@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-07-21
+
+Patch release: new group, call, profile and message-edit capabilities, plus stricter reading
+of boolean and numeric request fields.
+
+> ⚠️ **Two behaviour changes on already-released surfaces.** Neither alters a response payload
+> or removes a field, but both can affect an existing deployment:
+>
+> 1. **Boolean and numeric request fields are read strictly.** A value the pipe previously
+>    guessed at — `1`, `0`, `yes`, `no` for a boolean, or a blank string for a number — now
+>    returns `400` instead of being silently coerced. Real JSON booleans and numbers, the exact
+>    strings `"true"`/`"false"`, and numeric strings such as `"5"` all continue to work, so JSON
+>    clients and all five SDKs are unaffected. **Migration:** if you post form-encoded bodies or
+>    stringly-typed JSON, send canonical values.
+> 2. **Status posts now pass the `message:sending` plugin gate.** A plugin that blocks broadly
+>    will now also block status posts, where it previously had no visibility into them, and the
+>    gate `input` for a status post carries no `chatId`. **Migration:** a handler that reads
+>    `input.chatId` unconditionally should branch on the `source` or `type` field first.
+
 ### Added
 - **Outbound message edit.** `POST /api/sessions/:sessionId/messages/edit` edits the text of a
   message sent by the account, on both engines (whatsapp-web.js `Message.edit`, Baileys
