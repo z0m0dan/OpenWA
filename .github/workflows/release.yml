@@ -207,7 +207,7 @@ jobs:
     # a matching container image, and a runtime boot check on both architectures (boot-smoke runs the
     # published image on amd64 + arm64). Trades a few minutes of buildx/boot latency for release
     # safety.
-    needs: [lint, test, test-postgres, dashboard, build, docker, boot-smoke, promote]
+    needs: [lint, test, test-postgres, dashboard, build, docker, boot-smoke, promote, verify-published]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -475,3 +475,67 @@ jobs:
             echo "keeping version $version_id — the release tags share it (tags: $tags)."
             echo "Deleting it would unpublish them; the stray staging tag is left behind on purpose."
           fi
+
+  # ──── Verify what the public can actually pull ────────────────────
+  # The last thing to run, and the only check that looks at the registry the way a user does.
+  #
+  # v0.10.5 shipped with every job green and nothing pullable: the promote step tagged correctly, its
+  # own verify step confirmed the tag, and the cleanup step immediately after deleted the version those
+  # tags shared — so `latest`, `0.10` and `0.10.5` all vanished. Nothing noticed, because every existing
+  # check ran BEFORE the cleanup and from a runner already logged in to GHCR.
+  #
+  # This job fixes both blind spots. It runs after promote (so it sees the final state, cleanup
+  # included) and it never logs in, so it fails on a tag that exists but is not publicly readable —
+  # which is indistinguishable from a missing tag to everyone downstream. It checks every tag a user
+  # might pull, not just the exact version.
+  verify-published:
+    name: Verify published tags (anonymous)
+    runs-on: ubuntu-latest
+    needs: [promote]
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Deliberately NO docker/login-action here. Authenticating would defeat the purpose.
+      - name: Resolve every release tag without credentials
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          # Fail closed. A verification step that reports success because something upstream of the
+          # assertion broke is worse than no verification at all — `set -e` plus the checked-count
+          # assertion below mean this job cannot pass without having actually resolved all three tags.
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/v}"
+          minor="${version%.*}"
+          expected=3
+          checked=0
+          failed=0
+          for tag in "$version" "$minor" latest; do
+            ref="ghcr.io/${REPO,,}:${tag}"
+            echo "::group::$ref"
+            if ! docker buildx imagetools inspect "$ref" > "/tmp/pub-${tag}.txt" 2>&1; then
+              echo "::error::$ref is not publicly pullable after promotion."
+              cat "/tmp/pub-${tag}.txt"
+              failed=1
+              echo "::endgroup::"
+              continue
+            fi
+            for want in linux/amd64 linux/arm64; do
+              if ! grep -q "$want" "/tmp/pub-${tag}.txt"; then
+                echo "::error::$ref resolves but is missing $want"
+                failed=1
+              fi
+            done
+            echo "$ref OK"
+            checked=$((checked + 1))
+            echo "::endgroup::"
+          done
+          if [ "$checked" -ne "$expected" ]; then
+            echo "::error::only verified $checked of $expected tags — treating that as a failed release."
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::The release is not usable. Re-point the missing tags before announcing it."
+            exit 1
+          fi
+          echo "all $checked release tags are publicly pullable and multi-arch"
