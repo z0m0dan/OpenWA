@@ -11,6 +11,7 @@ import {
   ListObjectsV2Command,
   GetObjectCommand,
   PutObjectCommand,
+  DeleteObjectCommand,
   HeadBucketCommand,
   CreateBucketCommand,
 } from '@aws-sdk/client-s3';
@@ -186,6 +187,23 @@ export class StorageService {
       return this.putS3File(filePath, data);
     }
     return this.putLocalFile(filePath, data);
+  }
+
+  /**
+   * Remove a single object from the active backend. Best-effort by contract: a missing object is NOT
+   * an error (idempotent — the desired end-state "object absent" already holds), so callers doing
+   * cleanup on delete/replace don't have to special-case a first-time template with no prior media.
+   * Any other failure propagates so a genuine backend problem is visible to the caller's logs.
+   */
+  async deleteFile(filePath: string): Promise<void> {
+    // Same containment guard as get/putFile: never let an untrusted key escape the media/ prefix.
+    if (!isSafeStorageKey(filePath)) {
+      throw new Error(`Refusing to delete an unsafe storage key: ${filePath}`);
+    }
+    if (this.storageType === 's3' && this.s3Client && this.s3Available) {
+      return this.deleteS3File(filePath);
+    }
+    return this.deleteLocalFile(filePath);
   }
 
   async getFileCount(): Promise<{ count: number; sizeBytes: number }> {
@@ -425,6 +443,19 @@ export class StorageService {
     await fs.promises.writeFile(fullPath, data);
   }
 
+  private async deleteLocalFile(filePath: string): Promise<void> {
+    if (!isPathWithin(this.localPath, filePath)) {
+      throw new Error(`Refusing to delete outside storage root: ${filePath}`);
+    }
+    const fullPath = path.join(this.localPath, filePath);
+    try {
+      await fs.promises.unlink(fullPath);
+    } catch (error) {
+      // A missing file is a no-op (idempotent delete). Anything else propagates.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
   // ============================================================================
   // S3 Storage Operations
   // ============================================================================
@@ -490,6 +521,19 @@ export class StorageService {
         Bucket: this.s3Bucket,
         Key: `media/${filePath}`,
         Body: data,
+      }),
+    );
+  }
+
+  private async deleteS3File(filePath: string): Promise<void> {
+    if (!this.s3Client) throw new Error('S3 client not initialized');
+
+    // S3 DeleteObject is already idempotent — deleting an absent key returns success — so this needs
+    // no ENOENT special-casing like the local backend does.
+    await this.s3Client.send(
+      new DeleteObjectCommand({
+        Bucket: this.s3Bucket,
+        Key: `media/${filePath}`,
       }),
     );
   }
